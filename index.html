@@ -14,7 +14,7 @@
             height: 100vh; overflow: hidden; touch-action: none;
         }
         #game-wrapper {
-            position: relative; width: 100%; max-width: 420px; height: 100%; max-height: 600px;
+            position: relative; width: 100%; max-width: 420px; height: 100%; max-height: 700px; /* Đã tăng chiều cao tối đa */
         }
         canvas {
             display: block; width: 100%; height: 100%;
@@ -98,11 +98,12 @@
 
     // --- GAME CONFIG ---
     const BOARD_SIZE = 8;
-    const LOGICAL_WIDTH = 420, LOGICAL_HEIGHT = 600;
+    const LOGICAL_WIDTH = 420;
+    const LOGICAL_HEIGHT = 650; // Đã tăng chiều cao logic (từ 600 -> 650)
     const CELL_SIZE = 44;
-    const BOARD_MARGIN_TOP = 100;
+    const BOARD_MARGIN_TOP = 80; // Đẩy bảng chơi lên trên một chút (từ 100 -> 80)
     const BOARD_MARGIN_LEFT = (LOGICAL_WIDTH - (BOARD_SIZE * CELL_SIZE)) / 2;
-    const TRAY_Y = 480;
+    const TRAY_Y = 530; // Hạ khay chứa khối xuống dưới (từ 480 -> 530)
 
     let board = [], score = 0, highScore = 0, combo = 0;
     let tray = [null, null, null], draggedPiece = null;
@@ -131,23 +132,38 @@
             gainNode.gain.setValueAtTime(0.5, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
             osc.start(now); osc.stop(now + 0.2);
         } else if (type === 'bad') {
-            // NÂNG CẤP: Âm thanh báo hiệu lỗi, trầm và xấu
             osc.type = 'square'; osc.frequency.setValueAtTime(80, now); osc.frequency.exponentialRampToValueAtTime(40, now + 0.3);
             gainNode.gain.setValueAtTime(0.2, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
             osc.start(now); osc.stop(now + 0.3);
         }
     }
 
-    // --- SHAPES ---
+    // --- SHAPES DỄ HƠN (Chỉ Vuông & Chữ Nhật, Không có khối 5) ---
     const SHAPE_DEFS = [
-        { m: [[1]], c: '#FF3B30', size: 1 }, { m: [[1,1]], c: '#FF9500', size: 2 },
-        { m: [[1],[1]], c: '#FF9500', size: 2 }, { m: [[1,1,1]], c: '#FFCC00', size: 3 },
-        { m: [[1],[1],[1]], c: '#FFCC00', size: 3 }, { m: [[1,1,1,1]], c: '#4CD964', size: 4 },
-        { m: [[1],[1],[1],[1]], c: '#4CD964', size: 4 }, { m: [[1,1],[1,1]], c: '#5AC8FA', size: 4 },
-        { m: [[1,1,1],[1,1,1],[1,1,1]], c: '#007AFF', size: 9 }, { m: [[1,1],[1,0]], c: '#5856D6', size: 3 },
-        { m: [[1,1],[0,1]], c: '#5856D6', size: 3 }, { m: [[1,0],[1,1]], c: '#5856D6', size: 3 },
-        { m: [[0,1],[1,1]], c: '#5856D6', size: 3 }, { m: [[1,1,1],[1,0,0],[1,0,0]], c: '#FF2D55', size: 5 },
-        { m: [[1,1,1],[0,0,1],[0,0,1]], c: '#FF2D55', size: 5 }
+        // Vuông 1x1
+        { m: [[1]], c: '#FF3B30', size: 1 }, 
+        
+        // Chữ nhật 1x2, 2x1
+        { m: [[1,1]], c: '#FF9500', size: 2 },
+        { m: [[1],[1]], c: '#FF9500', size: 2 }, 
+        
+        // Chữ nhật 1x3, 3x1
+        { m: [[1,1,1]], c: '#FFCC00', size: 3 },
+        { m: [[1],[1],[1]], c: '#FFCC00', size: 3 }, 
+        
+        // Chữ nhật 1x4, 4x1
+        { m: [[1,1,1,1]], c: '#4CD964', size: 4 },
+        { m: [[1],[1],[1],[1]], c: '#4CD964', size: 4 }, 
+        
+        // Vuông 2x2
+        { m: [[1,1],[1,1]], c: '#007AFF', size: 4 }, 
+        
+        // Chữ nhật 2x3, 3x2
+        { m: [[1,1,1],[1,1,1]], c: '#5856D6', size: 6 },
+        { m: [[1,1],[1,1],[1,1]], c: '#5856D6', size: 6 },
+        
+        // Vuông 3x3
+        { m: [[1,1,1],[1,1,1],[1,1,1]], c: '#FF2D55', size: 9 }
     ];
 
     function loadHighScore() {
@@ -173,6 +189,8 @@
     function spawnTray() {
         let emptyCells = 0;
         for(let r=0; r<BOARD_SIZE; r++) for(let c=0; c<BOARD_SIZE; c++) if(board[r][c] === 0) emptyCells++;
+        
+        // Trợ giúp: Nếu bàn cờ sắp đầy, ưu tiên ra khối nhỏ
         let isCrowded = emptyCells < 25; 
         for (let i = 0; i < 3; i++) {
             let pool = isCrowded ? SHAPE_DEFS.filter(s => s.size <= 4) : SHAPE_DEFS;
@@ -181,20 +199,18 @@
         }
     }
 
-    // NÂNG CẤP: Logic làm mờ khối không thể lắp
     function updateBlockUsability() {
         for (let i = 0; i < tray.length; i++) {
             let p = tray[i];
             if (!p || !p.active) continue;
             let canPlaceAnywhere = false;
-            // Duyệt toàn bộ bảng
             for (let r = 0; r < BOARD_SIZE; r++) {
                 for (let c = 0; c < BOARD_SIZE; c++) {
                     if (canPlace(p.shape.m, c, r)) { canPlaceAnywhere = true; break; }
                 }
                 if (canPlaceAnywhere) break;
             }
-            p.disabled = !canPlaceAnywhere; // Làm mờ nếu không tìm thấy vị trí nào khả thi
+            p.disabled = !canPlaceAnywhere; 
         }
     }
 
@@ -247,7 +263,6 @@
 
         tray.forEach(p => { 
             if (p && p.active && (!draggedPiece || draggedPiece.index !== p.index)) {
-                // NÂNG CẤP: Làm mờ khối bị disabled (opacity = 0.3)
                 drawShape(p.cx, p.cy, p.shape, CELL_SIZE * 0.6, true, p.disabled ? 0.3 : 1); 
             } 
         });
@@ -281,11 +296,10 @@
                 let w = p.shape.m[0].length * (CELL_SIZE * 0.6), h = p.shape.m.length * (CELL_SIZE * 0.6);
                 if (pos.x > p.cx - w/2 - 20 && pos.x < p.cx + w/2 + 20 && pos.y > p.cy - h/2 - 20 && pos.y < p.cy + h/2 + 20) {
                     
-                    // NÂNG CẤP: Nếu người chơi cố kéo một khối bị disabled, phát âm thanh xấu và rung
                     if (p.disabled) {
                         playSound('bad');
-                        if (window.navigator.vibrate) window.navigator.vibrate([30, 30, 30]); // Rung giật nhẹ
-                        return; // Không cho phép kéo khối này
+                        if (window.navigator.vibrate) window.navigator.vibrate([30, 30, 30]);
+                        return;
                     }
 
                     draggedPiece = { shape: p.shape, index: i, x: pos.x - (p.shape.m[0].length * CELL_SIZE)/2, y: pos.y - (p.shape.m.length * CELL_SIZE)/2 - 80 };
@@ -312,7 +326,6 @@
             checkLines();
             if (tray.every(p => p === null)) spawnTray();
             
-            // NÂNG CẤP: Cập nhật trạng thái 'disabled' sau mỗi nước đi
             updateBlockUsability();
 
             if (checkGameOver()) showGameOver();
@@ -362,7 +375,6 @@
     function checkGameOver() {
         for (let i = 0; i < tray.length; i++) {
             let p = tray[i]; if (!p || !p.active) continue;
-            // NÂNG CẤP: Sử dụng trạng thái disabled có sẵn
             if (!p.disabled) return false;
         }
         return true;
