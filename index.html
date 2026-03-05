@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Block Blast - Bảo Ngọc</title>
+    <link rel="shortcut icon" href="block-blast.png" type="image/x-icon">
+    <style>
+        * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+        body { 
+            margin: 0; padding: 0; background: #0f0f13; color: white; 
+            font-family: 'Segoe UI', Tahoma, sans-serif; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center; 
+            height: 100vh; overflow: hidden; touch-action: none;
+        }
+        #game-wrapper {
+            position: relative; width: 100%; max-width: 420px; height: 100%; max-height: 600px;
+        }
+        canvas {
+            display: block; width: 100%; height: 100%;
+            background: #1a1a20; border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.8);
+            transition: transform 0.05s;
+        }
+        /* Hiệu ứng rung màn hình */
+        .shake { animation: shake 0.3s cubic-bezier(.36,.07,.19,.97) both; }
+        @keyframes shake {
+            10%, 90% { transform: translate3d(-1px, 0, 0); }
+            20%, 80% { transform: translate3d(2px, 0, 0); }
+            30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+            40%, 60% { transform: translate3d(4px, 0, 0); }
+        }
+
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .score-board { position: absolute; top: 15px; left: 20px; }
+        .high-score-board { position: absolute; top: 15px; right: 20px; text-align: right; }
+        .score-title { font-size: 12px; color: #888; text-transform: uppercase; font-weight: bold; }
+        .score-value { font-size: 28px; font-weight: bold; color: #fff; }
+        .high-score-value { font-size: 20px; font-weight: bold; color: #FFCC00; }
+        
+        #combo-display {
+            position: absolute; top: 70px; left: 50%; transform: translateX(-50%) scale(0.5);
+            font-size: 24px; font-weight: 900; color: #FF2D55;
+            opacity: 0; transition: opacity 0.2s, transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            text-shadow: 0 4px 15px rgba(255,45,85,0.6);
+        }
+        #combo-display.active { opacity: 1; transform: translateX(-50%) scale(1.2); }
+
+        #game-over-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); backdrop-filter: blur(5px);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            opacity: 0; pointer-events: none; transition: opacity 0.3s; border-radius: 15px;
+        }
+        #game-over-screen.active { opacity: 1; pointer-events: auto; }
+        #game-over-screen h2 { font-size: 40px; margin: 0 0 10px 0; color: #FF3B30; }
+        button {
+            padding: 15px 50px; font-size: 20px; font-weight: bold; margin-top: 20px;
+            border: none; border-radius: 30px; background: linear-gradient(135deg, #007AFF, #5856D6); 
+            color: white; cursor: pointer; box-shadow: 0 5px 20px rgba(0,122,255,0.4);
+        }
+        button:active { transform: scale(0.95); }
+    </style>
+</head>
+<body>
+
+<div id="game-wrapper">
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-layer">
+        <div class="score-board">
+            <div class="score-title">Score</div>
+            <div class="score-value" id="score">0</div>
+        </div>
+        <div class="high-score-board">
+            <div class="score-title">Best</div>
+            <div class="high-score-value" id="high-score">0</div>
+        </div>
+        <div id="combo-display">Combo x2!</div>
+    </div>
+    <div id="game-over-screen">
+        <h2>Game Over</h2>
+        <div class="score-value" id="final-score">0</div>
+        <div class="score-title" style="margin-top: 10px">Best: <span id="final-high-score">0</span></div>
+        <button onclick="restartGame()">Play Again</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const wrapper = document.getElementById('game-wrapper');
+    
+    // UI Elements
+    const scoreEl = document.getElementById('score');
+    const highScoreEl = document.getElementById('high-score');
+    const comboEl = document.getElementById('combo-display');
+    const gameOverScreen = document.getElementById('game-over-screen');
+
+    // --- GAME CONFIG ---
+    const BOARD_SIZE = 8;
+    const LOGICAL_WIDTH = 420, LOGICAL_HEIGHT = 600;
+    const CELL_SIZE = 44;
+    const BOARD_MARGIN_TOP = 100;
+    const BOARD_MARGIN_LEFT = (LOGICAL_WIDTH - (BOARD_SIZE * CELL_SIZE)) / 2;
+    const TRAY_Y = 480;
+
+    let board = [], score = 0, highScore = 0, combo = 0;
+    let tray = [null, null, null], draggedPiece = null;
+    let particles = [];
+    let scaleRatio = 1;
+
+    // --- AUDIO SYSTEM (Web Audio API) ---
+    let audioCtx = null;
+    function initAudio() {
+        if (!audioCtx) { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    }
+    
+    function playSound(type, comboMultiplier = 1) {
+        if (!audioCtx || audioCtx.state !== 'running') return;
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        osc.connect(gainNode); gainNode.connect(audioCtx.destination);
+        const now = audioCtx.currentTime;
+
+        if (type === 'place') {
+            osc.type = 'sine'; osc.frequency.setValueAtTime(400, now); osc.frequency.exponentialRampToValueAtTime(100, now + 0.1);
+            gainNode.gain.setValueAtTime(0.3, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+            osc.start(now); osc.stop(now + 0.1);
+        } else if (type === 'clear') {
+            osc.type = 'triangle'; let baseFreq = 300 + (comboMultiplier * 100); osc.frequency.setValueAtTime(baseFreq, now); osc.frequency.linearRampToValueAtTime(baseFreq * 1.5, now + 0.2);
+            gainNode.gain.setValueAtTime(0.5, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+            osc.start(now); osc.stop(now + 0.2);
+        } else if (type === 'bad') {
+            // NÂNG CẤP: Âm thanh báo hiệu lỗi, trầm và xấu
+            osc.type = 'square'; osc.frequency.setValueAtTime(80, now); osc.frequency.exponentialRampToValueAtTime(40, now + 0.3);
+            gainNode.gain.setValueAtTime(0.2, now); gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+            osc.start(now); osc.stop(now + 0.3);
+        }
+    }
+
+    // --- SHAPES ---
+    const SHAPE_DEFS = [
+        { m: [[1]], c: '#FF3B30', size: 1 }, { m: [[1,1]], c: '#FF9500', size: 2 },
+        { m: [[1],[1]], c: '#FF9500', size: 2 }, { m: [[1,1,1]], c: '#FFCC00', size: 3 },
+        { m: [[1],[1],[1]], c: '#FFCC00', size: 3 }, { m: [[1,1,1,1]], c: '#4CD964', size: 4 },
+        { m: [[1],[1],[1],[1]], c: '#4CD964', size: 4 }, { m: [[1,1],[1,1]], c: '#5AC8FA', size: 4 },
+        { m: [[1,1,1],[1,1,1],[1,1,1]], c: '#007AFF', size: 9 }, { m: [[1,1],[1,0]], c: '#5856D6', size: 3 },
+        { m: [[1,1],[0,1]], c: '#5856D6', size: 3 }, { m: [[1,0],[1,1]], c: '#5856D6', size: 3 },
+        { m: [[0,1],[1,1]], c: '#5856D6', size: 3 }, { m: [[1,1,1],[1,0,0],[1,0,0]], c: '#FF2D55', size: 5 },
+        { m: [[1,1,1],[0,0,1],[0,0,1]], c: '#FF2D55', size: 5 }
+    ];
+
+    function loadHighScore() {
+        highScore = localStorage.getItem('blockBlastHighScore') || 0;
+        highScoreEl.innerText = highScore;
+    }
+
+    function saveHighScore() {
+        if (score > highScore) { highScore = score; localStorage.setItem('blockBlastHighScore', highScore); highScoreEl.innerText = highScore; }
+    }
+
+    function resize() {
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = rect.width * window.devicePixelRatio;
+        canvas.height = rect.height * window.devicePixelRatio;
+        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        scaleRatio = rect.width / LOGICAL_WIDTH;
+    }
+    window.addEventListener('resize', resize);
+
+    function initBoard() { board = Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(0)); }
+
+    function spawnTray() {
+        let emptyCells = 0;
+        for(let r=0; r<BOARD_SIZE; r++) for(let c=0; c<BOARD_SIZE; c++) if(board[r][c] === 0) emptyCells++;
+        let isCrowded = emptyCells < 25; 
+        for (let i = 0; i < 3; i++) {
+            let pool = isCrowded ? SHAPE_DEFS.filter(s => s.size <= 4) : SHAPE_DEFS;
+            let shape = pool[Math.floor(Math.random() * pool.length)];
+            tray[i] = { shape: shape, index: i, cx: (i * LOGICAL_WIDTH / 3) + (LOGICAL_WIDTH / 6), cy: TRAY_Y, active: true, disabled: false };
+        }
+    }
+
+    // NÂNG CẤP: Logic làm mờ khối không thể lắp
+    function updateBlockUsability() {
+        for (let i = 0; i < tray.length; i++) {
+            let p = tray[i];
+            if (!p || !p.active) continue;
+            let canPlaceAnywhere = false;
+            // Duyệt toàn bộ bảng
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (canPlace(p.shape.m, c, r)) { canPlaceAnywhere = true; break; }
+                }
+                if (canPlaceAnywhere) break;
+            }
+            p.disabled = !canPlaceAnywhere; // Làm mờ nếu không tìm thấy vị trí nào khả thi
+        }
+    }
+
+    // --- RENDER & EFFECTS ---
+    function drawBlock(x, y, size, color, alpha = 1) {
+        ctx.globalAlpha = alpha; ctx.fillStyle = color;
+        ctx.beginPath(); ctx.roundRect(x + 1, y + 1, size - 2, size - 2, 6); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        ctx.beginPath(); ctx.roundRect(x + 1, y + 1, size - 2, (size - 2)/2, 6); ctx.fill();
+        ctx.globalAlpha = 1;
+    }
+
+    function createParticles(c, r, color) {
+        let px = BOARD_MARGIN_LEFT + c * CELL_SIZE + CELL_SIZE/2, py = BOARD_MARGIN_TOP + r * CELL_SIZE + CELL_SIZE/2;
+        for(let i=0; i<8; i++) {
+            particles.push({ x: px, y: py, vx: (Math.random() - 0.5) * 10, vy: (Math.random() - 0.5) * 10, life: 1, color: color });
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+
+        for (let r = 0; r < BOARD_SIZE; r++) {
+            for (let c = 0; c < BOARD_SIZE; c++) {
+                let x = BOARD_MARGIN_LEFT + c * CELL_SIZE, y = BOARD_MARGIN_TOP + r * CELL_SIZE;
+                if (board[r][c] === 0) {
+                    ctx.fillStyle = '#22222a'; ctx.beginPath(); ctx.roundRect(x, y, CELL_SIZE-2, CELL_SIZE-2, 6); ctx.fill();
+                } else { drawBlock(x, y, CELL_SIZE, board[r][c]); }
+            }
+        }
+
+        if (draggedPiece) {
+            let gridPos = getGridPosition(draggedPiece.x, draggedPiece.y);
+            if (gridPos && canPlace(draggedPiece.shape.m, gridPos.c, gridPos.r)) {
+                for (let r = 0; r < draggedPiece.shape.m.length; r++) {
+                    for (let c = 0; c < draggedPiece.shape.m[r].length; c++) {
+                        if (draggedPiece.shape.m[r][c]) {
+                            drawBlock(BOARD_MARGIN_LEFT + (gridPos.c + c) * CELL_SIZE, BOARD_MARGIN_TOP + (gridPos.r + r) * CELL_SIZE, CELL_SIZE, draggedPiece.shape.c, 0.3);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life -= 0.05;
+            if (p.life <= 0) { particles.splice(i, 1); continue; }
+            ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha = 1;
+        }
+
+        tray.forEach(p => { 
+            if (p && p.active && (!draggedPiece || draggedPiece.index !== p.index)) {
+                // NÂNG CẤP: Làm mờ khối bị disabled (opacity = 0.3)
+                drawShape(p.cx, p.cy, p.shape, CELL_SIZE * 0.6, true, p.disabled ? 0.3 : 1); 
+            } 
+        });
+        if (draggedPiece) drawShape(draggedPiece.x, draggedPiece.y, draggedPiece.shape, CELL_SIZE, false, 1);
+        
+        requestAnimationFrame(draw);
+    }
+
+    function drawShape(cx, cy, shape, size, centerAlign, alpha) {
+        let rows = shape.m.length, cols = shape.m[0].length;
+        let startX = cx - (centerAlign ? (cols * size) / 2 : 0), startY = cy - (centerAlign ? (rows * size) / 2 : 0);
+        for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+            if (shape.m[r][c]) drawBlock(startX + c * size, startY + r * size, size, shape.c, alpha);
+        }
+    }
+
+    // --- INTERACTION LOGIC ---
+    function getPointerPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX, clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x: (clientX - rect.left) / scaleRatio, y: (clientY - rect.top) / scaleRatio };
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+        initAudio(); if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        if (gameOverScreen.classList.contains('active')) return;
+        const pos = getPointerPos(e);
+        for (let i = 0; i < tray.length; i++) {
+            let p = tray[i];
+            if (p && p.active) {
+                let w = p.shape.m[0].length * (CELL_SIZE * 0.6), h = p.shape.m.length * (CELL_SIZE * 0.6);
+                if (pos.x > p.cx - w/2 - 20 && pos.x < p.cx + w/2 + 20 && pos.y > p.cy - h/2 - 20 && pos.y < p.cy + h/2 + 20) {
+                    
+                    // NÂNG CẤP: Nếu người chơi cố kéo một khối bị disabled, phát âm thanh xấu và rung
+                    if (p.disabled) {
+                        playSound('bad');
+                        if (window.navigator.vibrate) window.navigator.vibrate([30, 30, 30]); // Rung giật nhẹ
+                        return; // Không cho phép kéo khối này
+                    }
+
+                    draggedPiece = { shape: p.shape, index: i, x: pos.x - (p.shape.m[0].length * CELL_SIZE)/2, y: pos.y - (p.shape.m.length * CELL_SIZE)/2 - 80 };
+                    break;
+                }
+            }
+        }
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        if (!draggedPiece) return;
+        const pos = getPointerPos(e);
+        draggedPiece.x = pos.x - (draggedPiece.shape.m[0].length * CELL_SIZE) / 2;
+        draggedPiece.y = pos.y - (draggedPiece.shape.m.length * CELL_SIZE) / 2 - 80;
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+        if (!draggedPiece) return;
+        let gridPos = getGridPosition(draggedPiece.x, draggedPiece.y);
+        if (gridPos && canPlace(draggedPiece.shape.m, gridPos.c, gridPos.r)) {
+            playSound('place');
+            placeBlock(draggedPiece.shape, gridPos.c, gridPos.r);
+            tray[draggedPiece.index] = null;
+            checkLines();
+            if (tray.every(p => p === null)) spawnTray();
+            
+            // NÂNG CẤP: Cập nhật trạng thái 'disabled' sau mỗi nước đi
+            updateBlockUsability();
+
+            if (checkGameOver()) showGameOver();
+        }
+        draggedPiece = null;
+    });
+
+    function getGridPosition(x, y) { return { c: Math.round((x - BOARD_MARGIN_LEFT) / CELL_SIZE), r: Math.round((y - BOARD_MARGIN_TOP) / CELL_SIZE) }; }
+    function canPlace(m, c, r) {
+        for (let i = 0; i < m.length; i++) for (let j = 0; j < m[i].length; j++) {
+            if (m[i][j]) { let nr = r + i, nc = c + j; if (nr < 0 || nr >= BOARD_SIZE || nc < 0 || nc >= BOARD_SIZE || board[nr][nc] !== 0) return false; }
+        }
+        return true;
+    }
+
+    function placeBlock(shape, c, r) {
+        let placed = 0;
+        for (let i = 0; i < shape.m.length; i++) for (let j = 0; j < shape.m[i].length; j++) {
+            if (shape.m[i][j]) { board[r + i][c + j] = shape.c; placed++; }
+        }
+        score += placed; scoreEl.innerText = score;
+    }
+
+    function checkLines() {
+        let rowsToClear = [], colsToClear = [];
+        for (let r = 0; r < BOARD_SIZE; r++) if (board[r].every(c => c !== 0)) rowsToClear.push(r);
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            let full = true; for (let r = 0; r < BOARD_SIZE; r++) if (board[r][c] === 0) full = false;
+            if (full) colsToClear.push(c);
+        }
+
+        let linesCleared = rowsToClear.length + colsToClear.length;
+        if (linesCleared > 0) {
+            combo++;
+            score += linesCleared * 10 * combo; scoreEl.innerText = score;
+            canvas.classList.add('shake'); setTimeout(() => canvas.classList.remove('shake'), 300);
+            playSound('clear', combo);
+            if (combo > 1) {
+                comboEl.innerText = `Combo x${combo}!`; comboEl.classList.add('active'); setTimeout(() => comboEl.classList.remove('active'), 1000);
+            }
+            rowsToClear.forEach(r => { for(let c=0; c<BOARD_SIZE; c++) { createParticles(c, r, board[r][c]); board[r][c] = 0; }});
+            colsToClear.forEach(c => { for(let r=0; r<BOARD_SIZE; r++) { if(board[r][c] !== 0) createParticles(c, r, board[r][c]); board[r][c] = 0; }});
+        } else { combo = 0; }
+        saveHighScore();
+    }
+
+    function checkGameOver() {
+        for (let i = 0; i < tray.length; i++) {
+            let p = tray[i]; if (!p || !p.active) continue;
+            // NÂNG CẤP: Sử dụng trạng thái disabled có sẵn
+            if (!p.disabled) return false;
+        }
+        return true;
+    }
+
+    function showGameOver() {
+        document.getElementById('final-score').innerText = score;
+        document.getElementById('final-high-score').innerText = highScore;
+        gameOverScreen.classList.add('active');
+    }
+
+    function restartGame() {
+        gameOverScreen.classList.remove('active'); initBoard(); score = 0; combo = 0; scoreEl.innerText = score;
+        spawnTray(); updateBlockUsability(); particles = [];
+    }
+
+    loadHighScore(); initBoard(); spawnTray(); updateBlockUsability(); setTimeout(resize, 100); requestAnimationFrame(draw);
+</script>
+</body>
+</html>
